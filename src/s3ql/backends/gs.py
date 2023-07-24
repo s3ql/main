@@ -60,10 +60,9 @@ class ServerResponseError(Exception):
     not be expected to have any specific format).
     '''
 
-    def __init__(self, resp: HTTPResponse, error: str, body: str):
+    def __init__(self, resp: HTTPResponse, error: str):
         self.resp = resp
         self.error = error
-        self.body = body
 
     def __str__(self):
         return '<ServerResponseError: %s>' % self.error
@@ -100,6 +99,56 @@ class AccessTokenExpired(Exception):
     '''
     Raised if the access token has expired.
     '''
+
+
+def _parse_error_response(resp, body: bytes):
+    '''Return exception corresponding to server response.'''
+
+    try:
+        json_resp = _parse_json_response(resp, body)
+    except ServerResponseError:
+        # Error messages may come from intermediate proxies and thus may not be in JSON.
+        log.debug('Server response not JSON - intermediate proxy failure?')
+        return RequestError(code=resp.status, reason=resp.reason)
+
+    try:
+        message = json_resp['error']['message']
+        body = None
+    except KeyError:
+        log.warning('Did not find error.message element in JSON error response. This is odd.')
+        message = None
+        body = str(json_resp)
+
+    return RequestError(code=resp.status, reason=resp.reason, message=message)
+
+
+def _parse_json_response(resp, body: bytes):
+    # Note that even though the final server backend may guarantee to always deliver a JSON document
+    # body with a detailed error message, we may also get errors from intermediate proxies.
+    content_type = resp.headers.get('Content-Type', None)
+    if content_type:
+        hit = re.match(
+            r'application/json(?:; charset="(.+)")?$',
+            resp.headers['Content-Type'],
+            re.IGNORECASE,
+        )
+    if not content_type or not hit:
+        raise ServerResponseError(resp, error='expected json, got %s' % content_type)
+    charset = hit.group(1)
+
+    try:
+        body_text = body.decode(charset)
+    except UnicodeDecodeError as exc:
+        log.warning('Unable to decode JSON response as Unicode (%s) - this is odd.', str(exc))
+        raise ServerResponseError(resp, error=str(exc))
+
+    try:
+        resp_json = json.loads(body_text)
+    except json.JSONDecodeError as exc:
+        log.warning('Unable to decode JSON response (%s) - this is odd.', str(exc))
+        raise ServerResponseError(resp, error=str(exc))
+
+    return resp_json
 
 
 class Backend(AbstractBackend):
@@ -188,7 +237,7 @@ class Backend(AbstractBackend):
             if exc:
                 raise exc
             raise
-        self._parse_json_response(resp)
+        _parse_json_response(resp, self.conn.readall())
 
     def reset(self):
         if self.conn is not None and (self.conn.response_pending() or self.conn._out_remaining):
@@ -243,7 +292,7 @@ class Backend(AbstractBackend):
             body += '\n' + buf.decode(charset, errors='backslashreplace')
 
         log.warning('Expected empty response body, but got data - this is odd.')
-        raise ServerResponseError(resp, error='expected empty response', body=body)
+        raise ServerResponseError(resp, error='expected empty response')
 
     @retry
     def delete(self, key):
@@ -293,7 +342,7 @@ class Backend(AbstractBackend):
             if exc:
                 raise exc
             raise
-        json_resp = self._parse_json_response(resp)
+        json_resp = _parse_json_response(resp, self.conn.readall())
         page_token = json_resp.get('nextPageToken', None)
 
         if 'items' not in json_resp:
@@ -320,7 +369,7 @@ class Backend(AbstractBackend):
             if exc:
                 raise exc
             raise
-        return self._parse_json_response(resp)
+        return _parse_json_response(resp, self.conn.readall())
 
     @retry
     def get_size(self, key):
@@ -457,9 +506,9 @@ class Backend(AbstractBackend):
             self.conn.discard()
             raise AccessTokenExpired()
         elif resp.status != 200:
-            exc = self._parse_error_response(resp)
+            exc = _parse_error_response(resp, self.conn.co_readall())
             raise _map_request_error(exc, key) or exc
-        self._parse_json_response(resp)
+        _parse_json_response(resp, self.conn.readall())
 
         return body_size
 
@@ -504,7 +553,7 @@ class Backend(AbstractBackend):
 
             conn.send_request('POST', '/o/oauth2/token', headers=headers, body=body.encode('utf-8'))
             resp = conn.read_response()
-            json_resp = self._parse_json_response(resp, conn)
+            json_resp = _parse_json_response(resp, conn.readall())
 
             if resp.status > 299 or resp.status < 200:
                 assert 'error' in json_resp
@@ -514,65 +563,6 @@ class Backend(AbstractBackend):
                 self.access_token[self.refresh_token] = json_resp['access_token']
         finally:
             conn.disconnect()
-
-    def _parse_error_response(self, resp, conn=None):
-        '''Return exception corresponding to server response.'''
-
-        try:
-            json_resp = self._parse_json_response(resp, conn)
-        except ServerResponseError as exc:
-            # Error messages may come from intermediate proxies and thus may not
-            # be in JSON.
-            log.debug('Server response not JSON - intermediate proxy failure?')
-            return RequestError(code=resp.status, reason=resp.reason, body=exc.body)
-
-        try:
-            message = json_resp['error']['message']
-            body = None
-        except KeyError:
-            log.warning('Did not find error.message element in JSON error response. This is odd.')
-            message = None
-            body = str(json_resp)
-
-        return RequestError(code=resp.status, reason=resp.reason, message=message, body=body)
-
-    def _parse_json_response(self, resp, conn=None):
-
-        if conn is None:
-            conn = self.conn
-
-        # Note that even though the final server backend may guarantee to always
-        # deliver a JSON document body with a detailed error message, we may
-        # also get errors from intermediate proxies.
-        content_type = resp.headers.get('Content-Type', None)
-        if content_type:
-            hit = re.match(
-                r'application/json(?:; charset="(.+)")?$',
-                resp.headers['Content-Type'],
-                re.IGNORECASE,
-            )
-        if not content_type or not hit:
-            raise ServerResponseError(
-                resp, error='expected json, got %s' % content_type, body=self._dump_body(resp)
-            )
-        charset = hit.group(1)
-
-        body = conn.readall()
-        try:
-            body_text = body.decode(charset)
-        except UnicodeDecodeError as exc:
-            log.warning('Unable to decode JSON response as Unicode (%s) - this is odd.', str(exc))
-            raise ServerResponseError(
-                resp, error=str(exc), body=body.decode(charset, errors='backslashreplace')
-            )
-
-        try:
-            resp_json = json.loads(body_text)
-        except json.JSONDecodeError as exc:
-            log.warning('Unable to decode JSON response (%s) - this is odd.', str(exc))
-            raise ServerResponseError(resp, error=str(exc), body=body_text)
-
-        return resp_json
 
     def _dump_body(self, resp):
         '''Return truncated string representation of response body.'''
@@ -624,7 +614,7 @@ class Backend(AbstractBackend):
             if (expect100 and resp.status == 100) or (not expect100 and 200 <= resp.status <= 299):
                 return resp
             elif resp.status != 401:
-                raise self._parse_error_response(resp)
+                raise _parse_error_response(resp, self.conn.readall())
             self.conn.discard()
 
         # If we reach this point, then the access token must have
@@ -646,7 +636,7 @@ class Backend(AbstractBackend):
         if (expect100 and resp.status == 100) or (not expect100 and 200 <= resp.status <= 299):
             return resp
         else:
-            raise self._parse_error_response(resp)
+            raise _parse_error_response(resp, self.conn.readall())
 
 
 def _map_request_error(exc: RequestError, key: str):
