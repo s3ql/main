@@ -26,7 +26,7 @@ from collections.abc import Mapping, MutableMapping
 from enum import Enum
 from http.client import HTTP_PORT, HTTPS_PORT, NO_CONTENT, NOT_MODIFIED
 from inspect import getdoc
-from typing import Optional, Union
+from typing import Union
 
 import trio
 
@@ -406,9 +406,8 @@ class HTTPConnection:
         self._encoding = None
 
         #: If a regular `HTTPConnection` method is unable to send or receive data for more than
-        #: this period (in ms), it will raise `ConnectionTimedOut`. If zero, do not time out.
-        #: Coroutines are not affected by this attribute.
-        self._timeout_ms: Optional[int] = None
+        #: this period (in ms), it will raise `ConnectionTimedOut`.
+        self._timeout_ms: int = 24 * 60 * 60 * 1000
 
         #: Filehandler for tracing
         self.trace_fh = None
@@ -424,7 +423,7 @@ class HTTPConnection:
     @timeout.setter
     def timeout(self, value: Union[int, float, None]) -> None:
         if value is None:
-            self._timeout_ms = None
+            self._timeout_ms = 24 * 60 * 60 * 1000
         else:
             self._timeout_ms = int(value * 1000)
 
@@ -648,7 +647,10 @@ class HTTPConnection:
                     if not self._poll_send(self._timeout_ms):
                         raise ConnectionTimedOut('Timeout in send()')
                 else:
-                    await trio.lowlevel.wait_writable(self._sock)
+                    with trio.move_on_after(self._timeout_ms / 1000) as ctx:
+                        await trio.lowlevel.wait_writable(self._sock)
+                    if ctx.cancelled_caught:
+                        raise ConnectionTimedOut('Timeout in send()')
                 continue
             except (BrokenPipeError, ConnectionResetError, ssl.SSLEOFError):
                 raise ConnectionClosed('connection was interrupted')
@@ -1048,7 +1050,10 @@ class HTTPConnection:
                     if not self._poll_recv(self._timeout_ms):
                         raise ConnectionTimedOut('Timeout in recv()')
                 else:
-                    await trio.lowlevel.wait_readable(self._sock)
+                    with trio.move_on_after(self._timeout_ms / 1000) as ctx:
+                        await trio.lowlevel.wait_readable(self._sock)
+                    if ctx.cancelled_caught:
+                        raise ConnectionTimedOut('Timeout in recv()')
             elif got_data == 0:
                 if self._in_remaining is READ_UNTIL_EOF:
                     log.debug('connection closed, %d bytes in buffer', len(rbuf))
@@ -1174,7 +1179,10 @@ class HTTPConnection:
                         if not self._poll_recv(self._timeout_ms):
                             raise ConnectionTimedOut('Timeout in recv()')
                     else:
-                        await trio.lowlevel.wait_readable(self._sock)
+                        with trio.move_on_after(self._timeout_ms / 1000) as ctx:
+                            await trio.lowlevel.wait_readable(self._sock)
+                        if ctx.cancelled_caught:
+                            raise ConnectionTimedOut('Timeout in recv()')
                 elif res == 0:
                     raise ConnectionClosed('server closed connection')
                 else:
@@ -1247,7 +1255,10 @@ class HTTPConnection:
                     if not self._poll_recv(self._timeout_ms):
                         raise ConnectionTimedOut('Timeout in recv()')
                 else:
-                    await trio.lowlevel.wait_readable(self._sock)
+                    with trio.move_on_after(self._timeout_ms / 1000) as ctx:
+                        await trio.lowlevel.wait_readable(self._sock)
+                    if ctx.cancelled_caught:
+                        raise ConnectionTimedOut('Timeout in recv()')
             elif res == 0:
                 raise ConnectionClosed('server closed connection')
 

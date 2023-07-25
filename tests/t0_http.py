@@ -30,7 +30,6 @@ from http.server import BaseHTTPRequestHandler
 from io import TextIOWrapper
 
 import pytest
-import trio
 from pytest import raises as assert_raises
 
 import s3ql.http
@@ -378,13 +377,11 @@ async def test_blocking_send(conn, random_fh, monkeypatch):
 
     monkeypatch.setattr(MockRequestHandler, 'do_GET', do_GET)
 
-    for count in itertools.count():
-        with trio.move_on_after(1) as ctx:
+    with pytest.raises(ConnectionTimedOut):
+        for count in itertools.count():
             await conn.co_send_request('GET', path, body=random_fh.read(in_len))
-        if ctx.cancelled_caught:
-            break
-        elif count > 1000000:
-            pytest.fail("no blocking even after %d requests!?" % count)
+            if count > 1000000:
+                pytest.fail("no blocking even after %d requests!?" % count)
 
     # Read responses
     for _ in range(count):
