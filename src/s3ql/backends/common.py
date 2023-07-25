@@ -9,6 +9,7 @@ This work can be distributed under the terms of the GNU GPLv3.
 import hashlib
 import hmac
 import inspect
+import itertools
 import logging
 import os
 import random
@@ -22,6 +23,10 @@ from abc import ABCMeta, abstractmethod
 from functools import wraps
 from io import BytesIO
 from typing import Any, BinaryIO, Dict, Optional
+
+import trio
+
+from s3ql.http import HTTPConnection, is_temp_network_error
 
 from ..logging import LOG_ONCE, QuietError
 
@@ -561,3 +566,240 @@ def checksum_basic_mapping(metadata, key=None):
         chk.update(val)
 
     return chk.digest()
+
+
+def co_retry(fn, _tracker=RateTracker(60)):
+    '''Wrap coroutine function *fn* for retrying on temporary errors'''
+
+    if not inspect.iscoroutinefunction(fn):
+        raise TypeError('Expected coroutine function, not %r' % type(fn))
+
+    @wraps(fn)
+    async def wrapped(*a, **kw):
+        self = a[0]
+        interval = 1 / 50
+        waited = 0
+        for retries in itertools.count():
+            try:
+                return await fn(*a, **kw)
+            except Exception as exc:
+                if await self._handle_retry_exc(exc):
+                    pass
+                else:
+                    raise
+
+            _tracker.register()
+            rate = _tracker.get_rate()
+            if rate > 5:
+                log.warning(
+                    'Had to retry %d times over the last %d seconds, ' 'server or network problem?',
+                    rate * _tracker.window_length,
+                    _tracker.window_length,
+                )
+            else:
+                log.debug('Average retry rate: %.2f Hz', rate)
+
+            if waited > RETRY_TIMEOUT:
+                log.error(
+                    '%s.%s(*): Timeout exceeded, re-raising %r exception',
+                    self.__class__.__name__,
+                    fn.__name__,
+                    exc,
+                )
+                raise
+
+            if retries <= 2:
+                log_fn = log.debug
+            elif retries <= 4:
+                log_fn = log.info
+            else:
+                log_fn = log.warning
+
+            log_fn(
+                'Encountered %s (%s), retrying %s.%s (attempt %d)...',
+                type(exc).__name__,
+                exc,
+                self.__class__.__name__,
+                fn.__name__,
+                retries,
+            )
+
+            if hasattr(exc, 'retry_after') and exc.retry_after:
+                log.debug('retry_after is %.2f seconds', exc.retry_after)
+                interval = exc.retry_after
+
+            # Add some random variation to prevent flooding the
+            # server with too many concurrent requests.
+            await trio.sleep(interval * random.uniform(1, 1.5))
+            waited += interval
+            interval = min(5 * 60, 2 * interval)
+
+    return wrapped
+
+
+class HttpBackend(object, metaclass=ABCMeta):
+    """Base class for Backends using HTTP connections"""
+
+    known_options = {'ssl-ca-path', 'tcp-timeout', 'no-ssl'}
+
+    def __init__(self, options):
+        super().__init__()
+
+        self.options = options.backend_options  # type: Dict[str, str]
+        self.ssl_context = get_ssl_context(
+            self.options.get('ssl-ca-path', None)
+        )  # type: Optional[ssl.Context]
+        self.proxy = get_proxy(ssl=not self.options.get('no-ssl', False))  # type: str
+        self._conn: HTTPConnection = None
+
+    @co_retry
+    async def init(self):
+        '''Validate storage URL and credentials and establish connection.
+
+        This method automatically re-tries on network problems.
+        '''
+
+        self._conn = HTTPConnection(
+            self.hostname, self.port, proxy=self.proxy, ssl_context=self.ssl_context
+        )
+        self._conn.timeout = int(self.options.get('tcp-timeout', 20))
+        await trio.to_thread.run_sync(self._conn.connect)
+
+    async def _handle_retry_exc(self, exc: Exception):
+        '''Handle exception caught by co_retry()
+
+        Return *True* if the function should be retried and *False* if the exception should be
+        propagated. Ensure that the HTTP connection is in a consistent state for retrying.
+        '''
+
+        if is_temp_network_error(exc) or isinstance(exc, ssl.SSLError):
+            if self._conn:
+                await trio.to_thread.run_sync(self._conn.reset)
+            return True
+
+        return False
+
+    @property
+    def has_delete_multi(self):
+        '''True if the backend supports `delete_multi`.'''
+
+        return False
+
+    @abstractmethod
+    async def readinto_fh(self, key: str, fh: BinaryIO):
+        '''Transfer data stored under *key* into *fh*, return metadata.
+
+        The data will be inserted at the current offset. If a temporary error (as defined by
+        `is_temp_failure`) occurs, the operation is retried.
+        '''
+        pass
+
+    @abstractmethod
+    async def write_fh(
+        self,
+        key: str,
+        fh: BinaryIO,
+        metadata: Optional[Dict[str, Any]] = None,
+        len_: Optional[int] = None,
+    ):
+        '''Upload *len_* bytes from *fh* under *key*.
+
+        The data will be read at the current offset. If *len_* is None, reads until the
+        end of the file.
+
+        If a temporary error (as defined by `is_temp_failure`) occurs, the operation is
+        retried.  Returns the size of the resulting storage object (which may be less due
+        to compression)
+        '''
+        pass
+
+    async def fetch(self, key):
+        """Return data stored under `key`.
+
+        Returns a tuple with the data and metadata. If only the data itself is
+        required, ``backend[key]`` is a more concise notation for
+        ``backend.fetch(key)[0]``.
+        """
+
+        fh = BytesIO()
+        metadata = await self.readinto_fh(key, fh)
+        return (fh.getvalue(), metadata)
+
+    async def store(self, key, val, metadata=None):
+        """Store data under `key`.
+
+        `metadata` can be mapping with additional attributes to store with the
+        object. Keys have to be of type `str`, values have to be of elementary
+        type (`str`, `bytes`, `int`, `float` or `bool`).
+
+        If no metadata is required, one can simply assign to the subscripted
+        backend instead of using this function: ``backend[key] = val`` is
+        equivalent to ``backend.store(key, val)``.
+        """
+
+        return await self.write_fh(key, BytesIO(val), metadata)
+
+    @abstractmethod
+    async def lookup(self, key):
+        """Return metadata for given key.
+
+        If the key does not exist, `NoSuchObject` is raised.
+        """
+
+        pass
+
+    @abstractmethod
+    async def get_size(self, key):
+        '''Return size of object stored under *key*'''
+        pass
+
+    async def contains(self, key):
+        '''Check if `key` is in backend'''
+
+        try:
+            await self.lookup(key)
+        except NoSuchObject:
+            return False
+        else:
+            return True
+
+    @abstractmethod
+    async def delete(self, key):
+        """Delete object stored under `key`
+
+        Attempts to delete non-existing objects will silently succeed.
+        """
+        pass
+
+    async def delete_multi(self, keys):
+        """Delete objects stored under `keys`
+
+        Deleted objects are removed from the *keys* list, so that the caller can
+        determine which objects have not yet been processed if an exception is
+        occurs.
+
+        Attempts to delete non-existing objects will silently succeed.
+        """
+
+        while keys:
+            await self.delete(keys[-1])
+            keys.pop()
+
+    @abstractmethod
+    async def list(self, prefix=''):
+        '''List keys in backend
+
+        Returns an iterator over all keys in the backend.
+        '''
+        pass
+
+    async def close(self):
+        '''Close any opened resources
+
+        This method closes any resources allocated by the backend (e.g. network sockets). This
+        method should be called explicitly before a backend object is garbage collected. The backend
+        object may be re-used after `close` has been called, in this case the necessary resources
+        are transparently allocated again.
+        '''
+
+        pass
