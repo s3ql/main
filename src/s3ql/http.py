@@ -1306,10 +1306,11 @@ class HTTPConnection:
     def reset(self):
         '''Reset HTTP connection
 
-        This method resets the status of the HTTP connection after an exception
-        has occurred. Any cached data and pending responses are discarded.
+        This method resets the status of the HTTP connection. Any cached data and pending responses
+        are discarded.
         '''
         self.disconnect()
+        self.connect()
 
     def disconnect(self):
         '''Close HTTP connection'''
