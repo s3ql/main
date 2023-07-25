@@ -11,6 +11,7 @@ import contextlib
 import errno
 import functools
 import hashlib
+import inspect
 import logging
 import os
 import posixpath
@@ -22,9 +23,10 @@ import traceback
 from ast import literal_eval
 from base64 import b64decode, b64encode
 from getpass import getpass
-from typing import BinaryIO, Optional, Callable
+from typing import BinaryIO, Callable, Optional
 
 import pyfuse3
+
 from s3ql.http import HostnameNotResolvable
 
 from . import BUFSIZE, CTRL_NAME, ROOT_INODE
@@ -557,6 +559,36 @@ def copyfh(
         if not buf:
             return
         ofh.write(buf)
+        if len_:
+            len_ -= len(buf)
+        if update is not None:
+            update(buf)
+
+
+async def co_copyfh(
+    ifh: BinaryIO, ofh: BinaryIO, len_: Optional[int] = None, update: Optional[Callable] = None
+):
+    '''Copy up to *len* bytes from ifh to ofh.
+
+    If *update* is specified, call it with each block after the block
+    has been written to the output handle.
+    '''
+
+    ifh_is_async = inspect.iscoroutinefunction(ifh.read)
+    ofh_is_async = inspect.iscoroutinefunction(ofh.write)
+
+    while len_ is None or len_ > 0:
+        bufsize = BUFSIZE if len_ is None else min(BUFSIZE, len_)
+        if ifh_is_async:
+            buf = await ifh.read(bufsize)
+        else:
+            buf = ifh.read(bufsize)
+        if not buf:
+            return
+        if ofh_is_async:
+            await ofh.write(buf)
+        else:
+            ofh.write(buf)
         if len_:
             len_ -= len(buf)
         if update is not None:
