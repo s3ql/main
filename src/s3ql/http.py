@@ -1318,12 +1318,6 @@ class HTTPConnection:
         if self.trace_fh:
             self.trace_fh.close()
         if self._sock:
-            try:
-                self._sock.shutdown(socket.SHUT_RDWR)
-            except OSError:
-                # When called to reset after connection problems, socket
-                # may have shut down already.
-                pass
             self._sock.close()
             self._sock = None
             self._rbuf.clear()
