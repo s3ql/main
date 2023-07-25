@@ -33,6 +33,7 @@ from pytest_checklogs import assert_logs
 from s3ql import BUFSIZE, backends
 from s3ql.backends.common import AbstractBackend, CorruptedObjectError, NoSuchObject
 from s3ql.backends.comprenc import ComprencBackend, ObjectNotEncrypted
+from s3ql.backends.gs import AsyncBackend
 from s3ql.backends.gs import Backend as GSBackend
 from s3ql.backends.local import Backend as LocalBackend
 from s3ql.backends.s3c import BadDigestError, HTTPError, OperationAbortedError, S3Error
@@ -290,6 +291,39 @@ def assert_not_in_index(backend, keys):
     keys = set(keys)
     index = set(backend.list())
     assert keys - index == keys
+
+
+@pytest.mark.with_backend('gs/raw')
+async def test_async(backend: AbstractBackend):
+    backend = AsyncBackend(
+        Namespace(
+            backend_options=backend.options,
+            backend_login=backend.login,
+            backend_password=backend.refresh_token,
+            storage_url=backend.storage_url,
+        )
+    )
+    key = newname()
+    value = newvalue()
+    metadata = {'jimmy': 'jups@42'}
+    buf = BytesIO()
+
+    await backend.init()
+
+    with pytest.raises(NoSuchObject):
+        await backend.lookup(key)
+    with pytest.raises(NoSuchObject):
+        await backend.readinto_fh(key, buf)
+
+    assert await backend.write_fh(key, BytesIO(value), metadata) > 0
+
+    metadata2 = await backend.readinto_fh(key, buf)
+
+    assert value == buf.getvalue()
+    assert metadata == metadata2
+    assert await backend.lookup(key) == metadata
+
+    backend.close()
 
 
 @pytest.mark.with_backend('*/raw', 'local/*')
