@@ -21,31 +21,16 @@ from typing import Any, BinaryIO, Dict, Optional
 
 import trio
 
-from s3ql.http import (
-    BodyFollowing,
-    CaseInsensitiveDict,
-    ConnectionClosed,
-    HTTPConnection,
-    HTTPResponse,
-    UnsupportedResponse,
-    is_temp_network_error,
-)
+from s3ql.http import (BodyFollowing, CaseInsensitiveDict, ConnectionClosed,
+                       HTTPConnection, HTTPResponse, UnsupportedResponse,
+                       is_temp_network_error)
 
 from ..common import OAUTH_CLIENT_ID, OAUTH_CLIENT_SECRET, co_copyfh, copyfh
 from ..logging import QuietError
-from .common import (
-    AbstractBackend,
-    AuthenticationError,
-    AuthorizationError,
-    CorruptedObjectError,
-    DanglingStorageURLError,
-    HttpBackend,
-    NoSuchObject,
-    co_retry,
-    get_proxy,
-    get_ssl_context,
-    retry,
-)
+from .common import (AbstractBackend, AuthenticationError, AuthorizationError,
+                     CorruptedObjectError, DanglingStorageURLError,
+                     HttpBackend, NoSuchObject, co_retry, get_proxy,
+                     get_ssl_context, retry)
 
 try:
     import google.auth as g_auth
@@ -976,34 +961,7 @@ class AsyncBackend(HttpBackend):
     async def _write_fh(
         self, key: str, fh: BinaryIO, off: int, len_: int, metadata: Dict[str, Any]
     ):
-
-        metadata = json.dumps(
-            {
-                'metadata': _wrap_user_meta(metadata),
-                'name': self.prefix + key,
-            }
-        )
-
-        # Google Storage uses Content-Length to read the object data, so we
-        # don't have to worry about the boundary occurring in the object data.
-        boundary = 'foo_bar_baz'
-        headers = CaseInsensitiveDict()
-        headers['Content-Type'] = 'multipart/related; boundary=%s' % boundary
-
-        body_prefix = '\n'.join(
-            (
-                '--' + boundary,
-                'Content-Type: application/json; charset=UTF-8',
-                '',
-                metadata,
-                '--' + boundary,
-                'Content-Type: application/octet-stream',
-                '',
-                '',
-            )
-        ).encode()
-        body_suffix = ('\n--%s--\n' % boundary).encode()
-
+        (headers, body_prefix, body_suffix) = self._get_write_headers(key, metadata)
         body_size = len(body_prefix) + len(body_suffix) + len_
 
         path = '/upload/storage/v1/b/%s/o' % (urllib.parse.quote(self.bucket_name, safe=''),)
@@ -1059,6 +1017,86 @@ class AsyncBackend(HttpBackend):
         _parse_json_response(resp, await self._conn.co_readall())
 
         return body_size
+
+    def _get_write_headers(self, key: str, metadata: Dict[str, Any]):
+        metadata = json.dumps(
+            {
+                'metadata': _wrap_user_meta(metadata),
+                'name': self.prefix + key,
+            }
+        )
+
+        # Google Storage uses Content-Length to read the object data, so we
+        # don't have to worry about the boundary occurring in the object data.
+        boundary = 'foo_bar_baz'
+        headers = CaseInsensitiveDict()
+        headers['Content-Type'] = 'multipart/related; boundary=%s' % boundary
+
+        body_prefix = '\n'.join(
+            (
+                '--' + boundary,
+                'Content-Type: application/json; charset=UTF-8',
+                '',
+                metadata,
+                '--' + boundary,
+                'Content-Type: application/octet-stream',
+                '',
+                '',
+            )
+        ).encode()
+        body_suffix = ('\n--%s--\n' % boundary).encode()
+
+        return (headers, body_prefix, body_suffix)
+
+    async def write_fh_pipelined1(self, key: str, fh: BinaryIO, len_: int, metadata: Dict[str, Any]):
+        '''TODO: Docstring'''
+        (headers, body_prefix, body_suffix) = self._get_write_headers(key, metadata)
+
+        body_size = len(body_prefix) + len(body_suffix) + len_
+
+        headers['host'] = self.hostname
+        s = urllib.parse.urlencode({'uploadType': 'multipart'}, doseq=True)
+        path = '/upload/storage/v1/b/%s/o?%s' % (urllib.parse.quote(self.bucket_name, safe=''), s)
+
+        token = self.access_token.get(self.refresh_token, None)
+        if token is None:
+            # Lock to prevent multiple threads from refreshing the token simultaneously.
+            async with self._refresh_lock:
+                # Don't refresh if another thread has already done so while we waited for the lock.
+                if self.access_token.get(self.refresh_token, None) is None:
+                    await self._get_access_token()
+            token = self.access_token.get(self.refresh_token)
+        headers['Authorization'] = 'Bearer ' + token
+
+        await self._conn.co_send_request(
+            'POST', path, body=BodyFollowing(body_size), headers=headers, expect100=False
+        )
+        await self._conn.co_write(body_prefix)
+        await co_copyfh(fh, self._conn, len_)
+        await self._conn.co_write(body_suffix)
+
+        return body_size
+
+    async def write_fh_pipelined2(self, key: str):
+        '''TODO: Docstring'''
+
+        resp = await self._conn.co_read_response()
+
+        # If we're really unlucky, then the token has expired while we were uploading data.
+        if resp.status == 401:
+            await self._conn.discard()
+            raise AccessTokenExpired()
+
+        elif resp.status != 200:
+            exc = _parse_error_response(resp, await self._conn.co_readall())
+            exc = _map_request_error(exc, key)
+            if exc:
+                raise exc
+            raise
+        _parse_json_response(resp, await self._conn.co_readall())
+
+        # TODO: Can we check if this is the response for the right key?
+
 
     def close(self):
         self._conn.disconnect()
