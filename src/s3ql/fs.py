@@ -437,8 +437,9 @@ class Operations(pyfuse3.Operations):
                         queue.append(id_)
                     else:
                         if is_open:
-                            # Ideally, we should specify deleted=id_ here. See below for why we don't.
-                            pyfuse3.invalidate_entry_async(id_p, name, ignore_enoent=True)
+                            pyfuse3.invalidate_entry_async(
+                                id_p, name, ignore_enoent=True, deleted=id_
+                            )
                         await self._remove(id_p, name, id_, force=True)
                     processed += 1
 
@@ -461,7 +462,7 @@ class Operations(pyfuse3.Operations):
             # the DB tables) until this has happened? In either case, this is tricky because there
             # is no easy way to check when all the FORGET requires have arrived since we no longer
             # know what used to be in the directory.
-            pyfuse3.invalidate_entry_async(id_p0, name0, ignore_enoent=True)
+            pyfuse3.invalidate_entry_async(id_p0, name0, ignore_enoent=True, deleted=id0)
         await self._remove(id_p0, name0, id0, force=True)
 
         await self.forget([(id0, 1)])
@@ -1281,6 +1282,7 @@ class Operations(pyfuse3.Operations):
     async def forget(self, forget_list):
         log.debug('started with %s', forget_list)
 
+        await trio.sleep(1)
         for (id_, nlookup) in forget_list:
             self.open_inodes[id_] -= nlookup
 
