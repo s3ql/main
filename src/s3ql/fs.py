@@ -312,7 +312,7 @@ class Operations(pyfuse3.Operations):
                 log.debug('updated cache size to %d bytes', self.cache.cache.max_size)
 
             else:
-                log.warning('Received unknown command via control inode')
+                log.warning('Received unknown command via control inode: %r', name)
                 raise FUSEError(errno.EINVAL)
 
         # http://code.google.com/p/s3ql/issues/detail?id=385
