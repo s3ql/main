@@ -30,7 +30,6 @@ from http.server import BaseHTTPRequestHandler
 from io import TextIOWrapper
 
 import pytest
-import trio
 from pytest import raises as assert_raises
 
 import s3ql.http
@@ -162,7 +161,6 @@ def random_fh(request):
 
 @pytest.mark.skipif(no_internet_access, reason='no internet access available')
 def test_connect_ssl():
-
     ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
     ssl_context.minimum_version = ssl.TLSVersion.TLSv1_2
     ssl_context.verify_mode = ssl.CERT_REQUIRED
@@ -324,7 +322,7 @@ def get_chunked_GET_handler(path, chunks, delay=None):
         self.send_header("Content-Type", 'application/octet-stream')
         self.send_header("Transfer-Encoding", 'chunked')
         self.end_headers()
-        for (i, chunk_size) in enumerate(chunks):
+        for i, chunk_size in enumerate(chunks):
             if i % 3 == 0 and delay:
                 time.sleep(delay * 1e-3)
             self.wfile.write(('%x\r\n' % chunk_size).encode('us-ascii'))
@@ -378,13 +376,11 @@ async def test_blocking_send(conn, random_fh, monkeypatch):
 
     monkeypatch.setattr(MockRequestHandler, 'do_GET', do_GET)
 
-    for count in itertools.count():
-        with trio.move_on_after(1) as ctx:
+    with pytest.raises(ConnectionTimedOut):
+        for count in itertools.count():
             await conn.co_send_request('GET', path, body=random_fh.read(in_len))
-        if ctx.cancelled_caught:
-            break
-        elif count > 1000000:
-            pytest.fail("no blocking even after %d requests!?" % count)
+            if count > 1000000:
+                pytest.fail("no blocking even after %d requests!?" % count)
 
     # Read responses
     for _ in range(count):
@@ -810,7 +806,6 @@ def test_put_separate(conn):
 
 
 def test_100cont(conn, monkeypatch):
-
     path = '/check_this_out'
 
     def handle_expect_100(self):
@@ -1076,7 +1071,6 @@ DUMMY_DATA = ','.join(str(x) for x in range(10000)).encode()
 
 
 class MockRequestHandler(BaseHTTPRequestHandler):
-
     server_version = "MockHTTP"
     protocol_version = 'HTTP/1.1'
 

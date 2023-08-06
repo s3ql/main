@@ -41,6 +41,7 @@ from s3ql.mkfs import init_tables
 
 log = logging.getLogger(__name__)
 
+
 # A dummy removal queue to monkeypatch around the need for removal threads
 class DummyQueue:
     def __init__(self, cache):

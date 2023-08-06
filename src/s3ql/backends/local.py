@@ -138,7 +138,7 @@ class Backend(AbstractBackend):
         return True
 
     def delete_multi(self, keys):
-        for (i, key) in enumerate(keys):
+        for i, key in enumerate(keys):
             try:
                 self.delete(key)
             except:
@@ -155,14 +155,12 @@ class Backend(AbstractBackend):
             pass
 
     def list(self, prefix=''):
-
         if prefix:
             base = os.path.dirname(self._key_to_path(prefix))
         else:
             base = self.prefix
 
-        for (path, dirnames, filenames) in os.walk(base, topdown=True):
-
+        for path, dirnames, filenames in os.walk(base, topdown=True):
             # Do not look in wrong directories
             if prefix:
                 rpath = path[len(self.prefix) :]  # path relative to base

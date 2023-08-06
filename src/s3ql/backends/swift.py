@@ -459,7 +459,6 @@ class Backend(AbstractBackend):
 
     @retry
     def _write_fh(self, key: str, fh: BinaryIO, off: int, len_: int, metadata: Dict[str, Any]):
-
         headers = CaseInsensitiveDict()
         self._add_meta_headers(headers, metadata, chunksize=self.features.max_meta_len)
 
@@ -680,7 +679,6 @@ class Backend(AbstractBackend):
 
     @retry
     def _list_page(self, prefix, page_token=None, batch_size=1000):
-
         # Limit maximum number of results since we read everything
         # into memory (because Python JSON doesn't have a streaming API)
         query_string = {'prefix': prefix, 'limit': str(batch_size), 'format': 'json'}

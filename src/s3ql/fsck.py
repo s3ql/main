@@ -66,7 +66,6 @@ S_IFMT = (
 
 class Fsck:
     def __init__(self, cachedir_, backend_, param, conn):
-
         self.cachedir = cachedir_
         self.backend = backend_
         self.expect_errors = False
@@ -191,7 +190,7 @@ class Fsck:
         candidates = os.listdir(self.cachedir)
 
         total = len(candidates)
-        for (i, filename) in enumerate(candidates):
+        for i, filename in enumerate(candidates):
             i += 1  # start at 1
 
             log.info(
@@ -351,7 +350,7 @@ class Fsck:
 
         log.info('Checking contents (names)...')
 
-        for (rowid, name_id, inode_p, inode) in self.conn.query(
+        for rowid, name_id, inode_p, inode in self.conn.query(
             'SELECT contents.rowid, name_id, parent_inode, inode '
             'FROM contents LEFT JOIN names ON %(dbf)sname_id = %(dbf)snames.id '
             'WHERE %(dbf)snames.id IS NULL' % self.conn.fixes
@@ -383,7 +382,7 @@ class Fsck:
 
         log.info('Checking contents (parent inodes)...')
 
-        for (rowid, inode_p, name_id) in self.conn.query(
+        for rowid, inode_p, name_id in self.conn.query(
             'SELECT contents.rowid, parent_inode, name_id '
             'FROM contents LEFT JOIN inodes '
             'ON %(dbf)sparent_inode = %(dbf)sinodes.id '
@@ -410,7 +409,7 @@ class Fsck:
         log.info('Checking contents (inodes)...')
 
         to_delete = list()
-        for (rowid, inode_p, inode, name_id) in self.conn.query(
+        for rowid, inode_p, inode, name_id in self.conn.query(
             'SELECT contents.rowid, parent_inode, inode, '
             'name_id FROM contents LEFT JOIN inodes '
             'ON %(dbf)sinode = %(dbf)sinodes.id '
@@ -434,15 +433,14 @@ class Fsck:
 
         log.info('Checking extended attributes (names)...')
 
-        for (rowid, name_id, inode) in self.conn.query(
+        for rowid, name_id, inode in self.conn.query(
             'SELECT ext_attributes.rowid, name_id, inode '
             'FROM ext_attributes LEFT JOIN names '
             'ON %(dbf)sname_id = %(dbf)snames.id '
             'WHERE %(dbf)snames.id IS NULL' % self.conn.fixes
         ):
-
             self.found_errors = True
-            for (name, id_p) in self.conn.query(
+            for name, id_p in self.conn.query(
                 'SELECT name, parent_inode FROM contents_v WHERE inode=?', (inode,)
             ):
                 path = get_path(id_p, self.conn, name)
@@ -471,7 +469,7 @@ class Fsck:
         log.info('Checking extended attributes (inodes)...')
 
         to_delete = list()
-        for (rowid, inode, name_id) in self.conn.query(
+        for rowid, inode, name_id in self.conn.query(
             'SELECT ext_attributes.rowid, inode, name_id '
             'FROM ext_attributes LEFT JOIN inodes '
             'ON %(dbf)sinode = %(dbf)sinodes.id '
@@ -582,8 +580,7 @@ class Fsck:
                 WHERE size < min_size'''
             )
 
-            for (id_, size_old, size) in self.conn.query('SELECT * FROM wrong_sizes'):
-
+            for id_, size_old, size in self.conn.query('SELECT * FROM wrong_sizes'):
                 self.found_errors = True
                 self.log_error(
                     "Size of inode %d (%s) does not agree with number of blocks, "
@@ -623,7 +620,7 @@ class Fsck:
                 % self.conn.fixes
             )
 
-            for (id_, cnt, cnt_old) in self.conn.query('SELECT * FROM wrong_refcounts'):
+            for id_, cnt, cnt_old in self.conn.query('SELECT * FROM wrong_refcounts'):
                 # No checks for root and control
                 if id_ in (ROOT_INODE, CTRL_INODE):
                     continue
@@ -659,7 +656,7 @@ class Fsck:
         log.info('Checking inode_blocks.inode...')
 
         to_delete = list()
-        for (rowid, inode, obj_id) in self.conn.query(
+        for rowid, inode, obj_id in self.conn.query(
             'SELECT inode_blocks.rowid, inode, obj_id '
             'FROM inode_blocks LEFT JOIN inodes '
             'ON %(dbf)sinode = %(dbf)sinodes.id '
@@ -685,7 +682,7 @@ class Fsck:
         log.info('Checking block-object mapping...')
 
         to_delete = list()
-        for (rowid, obj_id, inode) in self.conn.query(
+        for rowid, obj_id, inode in self.conn.query(
             'SELECT inode_blocks.rowid, obj_id, inode FROM inode_blocks '
             'LEFT JOIN objects ON %(dbf)sobj_id = %(dbf)sobjects.id '
             'WHERE %(dbf)sobjects.id IS NULL' % self.conn.fixes
@@ -701,7 +698,7 @@ class Fsck:
                     'SELECT name, name_id, parent_inode FROM contents_v WHERE inode=?', (inode,)
                 )
             )
-            for (name, name_id, id_p) in affected_entries:
+            for name, name_id, id_p in affected_entries:
                 path = get_path(id_p, self.conn, name)
                 self.log_error("File may lack data, moved to /lost+found: %s", to_str(path))
                 (lof_id, newname) = self.resolve_free(b"/lost+found", escape(path))
@@ -722,7 +719,7 @@ class Fsck:
         log.info('Checking symlinks (inodes)...')
 
         to_delete = list()
-        for (rowid, inode) in self.conn.query(
+        for rowid, inode in self.conn.query(
             'SELECT symlink_targets.rowid, inode FROM symlink_targets '
             'LEFT JOIN inodes ON %(dbf)sinode = %(dbf)sinodes.id '
             'WHERE %(dbf)sinodes.id IS NULL' % self.conn.fixes
@@ -803,7 +800,7 @@ class Fsck:
                 % self.conn.fixes
             )
 
-            for (id_, cnt, cnt_old) in self.conn.query('SELECT * FROM wrong_refcounts'):
+            for id_, cnt, cnt_old in self.conn.query('SELECT * FROM wrong_refcounts'):
                 self.found_errors = True
                 if cnt is None:
                     self.log_error(
@@ -842,11 +839,10 @@ class Fsck:
 
         log.info('Checking unix conventions...')
 
-        for (inode, mode, size, target, rdev) in self.conn.query(
+        for inode, mode, size, target, rdev in self.conn.query(
             "SELECT id, mode, size, target, rdev "
             "FROM inodes LEFT JOIN symlink_targets ON id = inode"
         ):
-
             has_children = self.conn.has_val(
                 'SELECT 1 FROM contents WHERE parent_inode=? LIMIT 1', (inode,)
             )
@@ -937,7 +933,7 @@ class Fsck:
                     to_str(get_path(inode, self.conn)),
                 )
 
-        for (name, id_p) in self.conn.query(
+        for name, id_p in self.conn.query(
             'SELECT name, parent_inode FROM contents_v WHERE LENGTH(name) > 255'
         ):
             path = get_path(id_p, self.conn, name)
@@ -973,7 +969,7 @@ class Fsck:
                 % self.conn.fixes
             )
 
-            for (id_, cnt, cnt_old) in self.conn.query('SELECT * FROM wrong_refcounts'):
+            for id_, cnt, cnt_old in self.conn.query('SELECT * FROM wrong_refcounts'):
                 if cnt is None and id_ in self.unlinked_objects and cnt_old == 0:
                     # Object was unlinked by check_cache
                     self.conn.execute('DELETE FROM objects WHERE id=?', (id_,))
@@ -1166,7 +1162,6 @@ class Fsck:
 
 
 def parse_args(args):
-
     parser = ArgumentParser(description="Checks and repairs an S3QL filesystem.")
 
     parser.add_log('~/.s3ql/fsck.log')
@@ -1208,7 +1203,6 @@ def parse_args(args):
 
 
 def main(args=None):
-
     if args is None:
         args = sys.argv[1:]
 

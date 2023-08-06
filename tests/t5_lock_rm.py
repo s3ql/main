@@ -35,7 +35,6 @@ class TestLockRemove(t4_fuse.TestFuse):
         self.fsck()
 
     def tst_lock_rm(self):
-
         # Extract tar
         tempdir = os.path.join(self.mnt_dir, 'lock_dir')
         filename = os.path.join(tempdir, 'myfile')

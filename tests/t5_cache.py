@@ -31,11 +31,9 @@ with open(__file__, 'rb') as fh:
 
 
 class TestPerstCache(t4_fuse.TestFuse):
-
     # Need to overwrite parent class' method with something, thus the
     # inexpressive name.
     def test(self):
-
         # Write test data
         self.mkfs()
         self.mount(extra_args=['--keep-cache'])
@@ -94,7 +92,6 @@ class TestPerstCache(t4_fuse.TestFuse):
     # Check that cache is ignored if fs was mounted elsewhere
     @pytest.mark.parametrize("with_fsck", (True, False))
     def test_cache_flush(self, with_fsck):
-
         # Write test data
         self.mkfs()
         self.mount(extra_args=['--keep-cache'])

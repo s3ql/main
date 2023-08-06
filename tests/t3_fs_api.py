@@ -45,6 +45,7 @@ from s3ql.mkfs import init_tables
 # We need to access to protected members
 # pylint: disable=W0212
 
+
 # The classes provided by pyfuse3 have read-only attributes,
 # so we duck-type our own.
 class Ctx:
@@ -280,7 +281,6 @@ async def test_listxattr(ctx):
 
 
 async def test_read(ctx):
-
     len_ = ctx.max_obj_size
     data = random_data(len_)
     off = ctx.max_obj_size // 2
@@ -303,7 +303,6 @@ async def test_read(ctx):
 
 
 async def test_readdir(ctx, monkeypatch):
-
     # Create a few entries
     names = [('entry_%2d' % i).encode() for i in range(20)]
     for name in names:
@@ -1121,7 +1120,6 @@ async def test_copy_tree_2(ctx, monkeypatch):
 
 
 async def test_lock_tree(ctx):
-
     inode1 = await ctx.server.mkdir(ROOT_INODE, b'source', dir_mode(), some_ctx)
 
     # Create file
@@ -1207,7 +1205,6 @@ async def test_lock_tree(ctx):
 
 
 async def test_remove_tree(ctx, monkeypatch):
-
     inode1 = await ctx.server.mkdir(ROOT_INODE, b'source', dir_mode(), some_ctx)
 
     # Create file
@@ -1232,7 +1229,7 @@ async def test_remove_tree(ctx, monkeypatch):
     monkeypatch.setattr('pyfuse3.invalidate_entry', lambda *args: None)
     await ctx.server.remove_tree(ROOT_INODE, b'source')
 
-    for (id_p, name) in (
+    for id_p, name in (
         (ROOT_INODE, b'source'),
         (inode1.st_ino, b'file1'),
         (inode1.st_ino, b'dir1'),

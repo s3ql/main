@@ -34,6 +34,7 @@ def get_clock_granularity():
 
 CLOCK_GRANULARITY = get_clock_granularity()
 
+
 # When testing, we want to make sure that we don't sleep for too short a time
 # (cause it may cause spurious test failures), and that the sleep interval
 # covers at least one timer update. We have to monkeypatch because we especially

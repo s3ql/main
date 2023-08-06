@@ -138,7 +138,6 @@ def create_handler(target):
 
 
 def setup_logging(options):
-
     # We want to be able to detect warnings and higher severities
     # in the captured test output. 'critical' has too many potential
     # false positives, so we rename this level to "FATAL".

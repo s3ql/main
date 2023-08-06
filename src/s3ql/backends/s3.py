@@ -101,7 +101,6 @@ class Backend(s3c.Backend):
 
     @retry
     def _delete_multi(self, keys):
-
         body = ['<Delete>']
         esc_prefix = xml_escape(self.prefix)
         for key in keys:

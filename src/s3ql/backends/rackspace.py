@@ -19,7 +19,6 @@ class Backend(swiftks.Backend):
     """A backend to store data in Rackspace CloudFiles"""
 
     def _parse_storage_url(self, storage_url, ssl_context):
-
         hit = re.match(
             r'^rackspace://'  # Backend
             r'([^/:]+)'  # Region

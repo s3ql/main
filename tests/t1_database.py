@@ -221,7 +221,7 @@ def test_versioning(backend):
 
         db.close()
 
-    for (params, ref_db) in versions:
+    for params, ref_db in versions:
         with tempfile.NamedTemporaryFile() as tmpfh2:
             download_metadata(backend, tmpfh2.name, params)
             assert tmpfh2.read() == ref_db
@@ -239,12 +239,11 @@ def _test_expiration(
     db_sizes: List[int],
     versions_to_keep: int,
 ):
-
     id_seq_map = {}
     for blockno, versions in enumerate(contents_pre):
         assert len(db_sizes) == len(versions)
         last_id = None
-        for (seq_no, block_id) in enumerate(versions):
+        for seq_no, block_id in enumerate(versions):
             if last_id != block_id:
                 last_id = block_id
                 if block_id is None:

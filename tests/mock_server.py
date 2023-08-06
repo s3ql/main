@@ -118,7 +118,7 @@ class S3CRequestHandler(BaseHTTPRequestHandler):
 
     def _get_meta(self):
         meta = dict()
-        for (name, value) in self.headers.items():
+        for name, value in self.headers.items():
             hit = self.meta_header_re.search(name)
             if hit:
                 meta[hit.group(1)] = value
@@ -204,7 +204,7 @@ class S3CRequestHandler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", 'application/octet-stream')
         self.send_header("Content-Length", str(len(data)))
-        for (name, value) in meta.items():
+        for name, value in meta.items():
             self.send_header(self.hdr_prefix + 'Meta-%s' % name, value)
         md5 = hashlib.md5()
         md5.update(data)
@@ -260,12 +260,11 @@ class S3CRequestHandler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", 'application/octet-stream')
         self.send_header("Content-Length", str(len(data)))
-        for (name, value) in meta.items():
+        for name, value in meta.items():
             self.send_header(self.hdr_prefix + 'Meta-%s' % name, value)
         self.end_headers()
 
     def send_error(self, status, message=None, code='', resource='', extra_headers=None):
-
         if not message:
             try:
                 (_, message) = self.responses[status]
@@ -286,7 +285,7 @@ class S3CRequestHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", 'text/xml; charset="utf-8"')
         self.send_header("Content-Length", str(len(content)))
         if extra_headers:
-            for (name, value) in extra_headers.items():
+            for name, value in extra_headers.items():
                 self.send_header(name, value)
         self.end_headers()
         if self.command != 'HEAD' and status >= 200 and status not in (204, 304):

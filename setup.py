@@ -47,7 +47,6 @@ class pytest(TestCommand):
 
 
 def main():
-
     with open(os.path.join(basedir, 'README.rst'), 'r') as fh:
         long_desc = fh.read()
 

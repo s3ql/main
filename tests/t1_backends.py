@@ -92,7 +92,7 @@ def _get_backend_info():
         info.append(bi)
 
     # Backends talking to local mock servers
-    for (request_handler, storage_url) in mock_server.handler_list:
+    for request_handler, storage_url in mock_server.handler_list:
         name = re.match(r'^([a-zA-Z0-9]+)://', storage_url).group(1)
         bi = Namespace()
         bi.name = 'mock-' + name

@@ -14,11 +14,15 @@ import re
 import ssl
 import threading
 import urllib.parse
+from argparse import Namespace
 from ast import literal_eval
 from base64 import b64decode, b64encode
 from itertools import count
 from typing import Any, BinaryIO, Dict, Optional
 
+import trio
+
+from s3ql.backends import common
 from s3ql.http import (
     BodyFollowing,
     CaseInsensitiveDict,
@@ -29,7 +33,7 @@ from s3ql.http import (
     is_temp_network_error,
 )
 
-from ..common import OAUTH_CLIENT_ID, OAUTH_CLIENT_SECRET, copyfh
+from ..common import OAUTH_CLIENT_ID, OAUTH_CLIENT_SECRET, co_copyfh, copyfh
 from ..logging import QuietError
 from .common import (
     AbstractBackend,
@@ -37,7 +41,10 @@ from .common import (
     AuthorizationError,
     CorruptedObjectError,
     DanglingStorageURLError,
+    HttpBackend,
     NoSuchObject,
+    UploadRequest,
+    co_retry,
     get_proxy,
     get_ssl_context,
     retry,
@@ -60,10 +67,9 @@ class ServerResponseError(Exception):
     not be expected to have any specific format).
     '''
 
-    def __init__(self, resp: HTTPResponse, error: str, body: str):
+    def __init__(self, resp: HTTPResponse, error: str):
         self.resp = resp
         self.error = error
-        self.body = body
 
     def __str__(self):
         return '<ServerResponseError: %s>' % self.error
@@ -102,6 +108,56 @@ class AccessTokenExpired(Exception):
     '''
 
 
+def _parse_error_response(resp, body: bytes):
+    '''Return exception corresponding to server response.'''
+
+    try:
+        json_resp = _parse_json_response(resp, body)
+    except ServerResponseError:
+        # Error messages may come from intermediate proxies and thus may not be in JSON.
+        log.debug('Server response not JSON - intermediate proxy failure?')
+        return RequestError(code=resp.status, reason=resp.reason)
+
+    try:
+        message = json_resp['error']['message']
+        body = None
+    except KeyError:
+        log.warning('Did not find error.message element in JSON error response. This is odd.')
+        message = None
+        body = str(json_resp)
+
+    return RequestError(code=resp.status, reason=resp.reason, message=message)
+
+
+def _parse_json_response(resp, body: bytes):
+    # Note that even though the final server backend may guarantee to always deliver a JSON document
+    # body with a detailed error message, we may also get errors from intermediate proxies.
+    content_type = resp.headers.get('Content-Type', None)
+    if content_type:
+        hit = re.match(
+            r'application/json(?:; charset="(.+)")?$',
+            resp.headers['Content-Type'],
+            re.IGNORECASE,
+        )
+    if not content_type or not hit:
+        raise ServerResponseError(resp, error='expected json, got %s' % content_type)
+    charset = hit.group(1)
+
+    try:
+        body_text = body.decode(charset)
+    except UnicodeDecodeError as exc:
+        log.warning('Unable to decode JSON response as Unicode (%s) - this is odd.', str(exc))
+        raise ServerResponseError(resp, error=str(exc))
+
+    try:
+        resp_json = json.loads(body_text)
+    except json.JSONDecodeError as exc:
+        log.warning('Unable to decode JSON response (%s) - this is odd.', str(exc))
+        raise ServerResponseError(resp, error=str(exc))
+
+    return resp_json
+
+
 class Backend(AbstractBackend):
     """A backend to store data in Google Storage"""
 
@@ -125,6 +181,10 @@ class Backend(AbstractBackend):
         self.proxy = get_proxy(ssl=True)  # type: str
         self.login = options.backend_login  # type: str
         self.refresh_token = options.backend_password  # type: str
+
+        # Temporary hack to enable us to more easily instantiate an AsyncBackend from a regular
+        # backend instance.
+        self.storage_url = options.storage_url
 
         if self.login == 'adc':
             if g_auth is None:
@@ -174,6 +234,16 @@ class Backend(AbstractBackend):
         self.conn = self._get_conn()
         self._check_bucket()
 
+    def get_async_backend(self):
+        return AsyncBackend(
+            Namespace(
+                backend_options=self.options,
+                backend_login=self.login,
+                backend_password=self.refresh_token,
+                storage_url=self.storage_url,
+            )
+        )
+
     @retry
     def _check_bucket(self):
         '''Check if bucket exists and/or credentials are correct.'''
@@ -188,7 +258,7 @@ class Backend(AbstractBackend):
             if exc:
                 raise exc
             raise
-        self._parse_json_response(resp)
+        _parse_json_response(resp, self.conn.readall())
 
     def reset(self):
         if self.conn is not None and (self.conn.response_pending() or self.conn._out_remaining):
@@ -243,7 +313,7 @@ class Backend(AbstractBackend):
             body += '\n' + buf.decode(charset, errors='backslashreplace')
 
         log.warning('Expected empty response body, but got data - this is odd.')
-        raise ServerResponseError(resp, error='expected empty response', body=body)
+        raise ServerResponseError(resp, error='expected empty response')
 
     @retry
     def delete(self, key):
@@ -277,7 +347,6 @@ class Backend(AbstractBackend):
 
     @retry
     def _list_page(self, prefix, page_token=None, batch_size=1000):
-
         # Limit maximum number of results since we read everything
         # into memory (because Python JSON doesn't have a streaming API)
         query_string = {'prefix': prefix, 'maxResults': str(batch_size)}
@@ -293,7 +362,7 @@ class Backend(AbstractBackend):
             if exc:
                 raise exc
             raise
-        json_resp = self._parse_json_response(resp)
+        json_resp = _parse_json_response(resp, self.conn.readall())
         page_token = json_resp.get('nextPageToken', None)
 
         if 'items' not in json_resp:
@@ -308,7 +377,6 @@ class Backend(AbstractBackend):
         return _unwrap_user_meta(self._get_gs_meta(key))
 
     def _get_gs_meta(self, key):
-
         path = '/storage/v1/b/%s/o/%s' % (
             urllib.parse.quote(self.bucket_name, safe=''),
             urllib.parse.quote(self.prefix + key, safe=''),
@@ -320,7 +388,7 @@ class Backend(AbstractBackend):
             if exc:
                 raise exc
             raise
-        return self._parse_json_response(resp)
+        return _parse_json_response(resp, self.conn.readall())
 
     @retry
     def get_size(self, key):
@@ -338,7 +406,6 @@ class Backend(AbstractBackend):
 
     @retry
     def _readinto_fh(self, key: str, fh: BinaryIO, off: int):
-
         gs_meta = self._get_gs_meta(key)
         metadata = _unwrap_user_meta(gs_meta)
 
@@ -382,7 +449,6 @@ class Backend(AbstractBackend):
 
     @retry
     def _write_fh(self, key: str, fh: BinaryIO, off: int, len_: int, metadata: Dict[str, Any]):
-
         metadata = json.dumps(
             {
                 'metadata': _wrap_user_meta(metadata),
@@ -457,9 +523,9 @@ class Backend(AbstractBackend):
             self.conn.discard()
             raise AccessTokenExpired()
         elif resp.status != 200:
-            exc = self._parse_error_response(resp)
+            exc = _parse_error_response(resp, self.conn.co_readall())
             raise _map_request_error(exc, key) or exc
-        self._parse_json_response(resp)
+        _parse_json_response(resp, self.conn.readall())
 
         return body_size
 
@@ -501,10 +567,9 @@ class Backend(AbstractBackend):
             'accounts.google.com', 443, proxy=self.proxy, ssl_context=self.ssl_context
         )
         try:
-
             conn.send_request('POST', '/o/oauth2/token', headers=headers, body=body.encode('utf-8'))
             resp = conn.read_response()
-            json_resp = self._parse_json_response(resp, conn)
+            json_resp = _parse_json_response(resp, conn.readall())
 
             if resp.status > 299 or resp.status < 200:
                 assert 'error' in json_resp
@@ -514,65 +579,6 @@ class Backend(AbstractBackend):
                 self.access_token[self.refresh_token] = json_resp['access_token']
         finally:
             conn.disconnect()
-
-    def _parse_error_response(self, resp, conn=None):
-        '''Return exception corresponding to server response.'''
-
-        try:
-            json_resp = self._parse_json_response(resp, conn)
-        except ServerResponseError as exc:
-            # Error messages may come from intermediate proxies and thus may not
-            # be in JSON.
-            log.debug('Server response not JSON - intermediate proxy failure?')
-            return RequestError(code=resp.status, reason=resp.reason, body=exc.body)
-
-        try:
-            message = json_resp['error']['message']
-            body = None
-        except KeyError:
-            log.warning('Did not find error.message element in JSON error response. This is odd.')
-            message = None
-            body = str(json_resp)
-
-        return RequestError(code=resp.status, reason=resp.reason, message=message, body=body)
-
-    def _parse_json_response(self, resp, conn=None):
-
-        if conn is None:
-            conn = self.conn
-
-        # Note that even though the final server backend may guarantee to always
-        # deliver a JSON document body with a detailed error message, we may
-        # also get errors from intermediate proxies.
-        content_type = resp.headers.get('Content-Type', None)
-        if content_type:
-            hit = re.match(
-                r'application/json(?:; charset="(.+)")?$',
-                resp.headers['Content-Type'],
-                re.IGNORECASE,
-            )
-        if not content_type or not hit:
-            raise ServerResponseError(
-                resp, error='expected json, got %s' % content_type, body=self._dump_body(resp)
-            )
-        charset = hit.group(1)
-
-        body = conn.readall()
-        try:
-            body_text = body.decode(charset)
-        except UnicodeDecodeError as exc:
-            log.warning('Unable to decode JSON response as Unicode (%s) - this is odd.', str(exc))
-            raise ServerResponseError(
-                resp, error=str(exc), body=body.decode(charset, errors='backslashreplace')
-            )
-
-        try:
-            resp_json = json.loads(body_text)
-        except json.JSONDecodeError as exc:
-            log.warning('Unable to decode JSON response (%s) - this is odd.', str(exc))
-            raise ServerResponseError(resp, error=str(exc), body=body_text)
-
-        return resp_json
 
     def _dump_body(self, resp):
         '''Return truncated string representation of response body.'''
@@ -624,7 +630,7 @@ class Backend(AbstractBackend):
             if (expect100 and resp.status == 100) or (not expect100 and 200 <= resp.status <= 299):
                 return resp
             elif resp.status != 401:
-                raise self._parse_error_response(resp)
+                raise _parse_error_response(resp, self.conn.readall())
             self.conn.discard()
 
         # If we reach this point, then the access token must have
@@ -646,7 +652,7 @@ class Backend(AbstractBackend):
         if (expect100 and resp.status == 100) or (not expect100 and 200 <= resp.status <= 299):
             return resp
         else:
-            raise self._parse_error_response(resp)
+            raise _parse_error_response(resp, self.conn.readall())
 
 
 def _map_request_error(exc: RequestError, key: str):
@@ -663,9 +669,8 @@ def _map_request_error(exc: RequestError, key: str):
 
 
 def _wrap_user_meta(user_meta):
-
     obj_meta = dict()
-    for (key, val) in user_meta.items():
+    for key, val in user_meta.items():
         if not isinstance(key, str):
             raise TypeError('metadata keys must be str, not %s' % type(key))
         if not isinstance(val, (str, bytes, int, float, complex, bool)) and val is not None:
@@ -699,14 +704,14 @@ def _unwrap_user_meta(json_resp):
             parts.append(part)
         buf = ''.join(parts)
         meta = literal_eval('{ %s }' % buf)
-        for (k, v) in meta.items():
+        for k, v in meta.items():
             if isinstance(v, bytes):
                 meta[k] = b64decode(v)
 
         return meta
 
     meta = {}
-    for (k, v) in meta_raw.items():
+    for k, v in meta_raw.items():
         try:
             v2 = literal_eval(v)
         except ValueError as exc:
@@ -723,3 +728,484 @@ def md5sum_b64(buf):
     '''Return base64 encoded MD5 sum'''
 
     return b64encode(hashlib.md5(buf).digest()).decode('ascii')
+
+
+class UploadWorker(common.UploadWorker):
+    async def _upload_send(self, req: UploadRequest) -> None:
+        '''Send HTTP request for object upload request *req*'''
+
+        (headers, body_prefix, body_suffix) = self._backend._get_write_headers(
+            req.key, req.metadata
+        )
+
+        body_size = len(body_prefix) + len(body_suffix) + req.len
+
+        headers['host'] = self._backend.hostname
+        s = urllib.parse.urlencode({'uploadType': 'multipart'}, doseq=True)
+        path = '/upload/storage/v1/b/%s/o?%s' % (
+            urllib.parse.quote(self._backend.bucket_name, safe=''),
+            s,
+        )
+
+        token = self._backend.access_token.get(self._backend.refresh_token, None)
+        if token is None:
+            # Lock to prevent multiple threads from refreshing the token simultaneously.
+            async with self._backend._refresh_lock:
+                # Don't refresh if another thread has already done so while we waited for the lock.
+                if self._backend.access_token.get(self._backend.refresh_token, None) is None:
+                    await self._backend._get_access_token()
+            token = self._backend.access_token.get(self._backend.refresh_token)
+        headers['Authorization'] = 'Bearer ' + token
+
+        log.debug('starting POST %s', req.key)
+        await self._conn.co_send_request(
+            'POST', path, body=BodyFollowing(body_size), headers=headers, expect100=False
+        )
+        await self._conn.co_write(body_prefix)
+        req.fh.seek(req.off)
+        await co_copyfh(req.fh, self._conn, req.len)
+        await self._conn.co_write(body_suffix)
+        log.debug('completed POST %s', req.key)
+
+        return body_size
+
+    async def _upload_recv(self, req: UploadRequest) -> int:
+        '''Read HTTP response for upload request *req*
+
+        Return the size of the resulting object.
+        '''
+        log.debug('Reading response...')
+        resp = await self._conn.co_read_response()
+
+        # If we're really unlucky, then the token has expired while we were uploading data.
+        if resp.status == 401:
+            await self._conn.discard()
+            raise AccessTokenExpired()
+
+        elif resp.status != 200:
+            exc = _parse_error_response(resp, await self._conn.co_readall())
+            exc = _map_request_error(exc, req.key)
+            if exc:
+                raise exc
+            raise
+        res = _parse_json_response(resp, await self._conn.co_readall())
+        assert res['name'] == req.key
+        log.debug('Received response for POST %s', req.key)
+
+
+class AsyncBackend(HttpBackend):
+    """A backend to store data in Google Storage"""
+
+    known_options = {'ssl-ca-path', 'tcp-timeout'}
+    upload_worker_class = UploadWorker
+
+    # We don't want to request an access token for each instance,
+    # because there is a limit on the total number of valid tokens.
+    # This class variable holds the mapping from refresh tokens to
+    # access tokens.
+    access_token = dict()
+    _refresh_lock = trio.Lock()
+    adc = None
+
+    def __init__(self, options):
+        self.login = options.backend_login  # type: str
+        self.refresh_token = options.backend_password  # type: str
+
+        if self.login not in ('adc', 'oauth2'):
+            raise QuietError("Google Storage backend requires OAuth2 or ADC authentication")
+
+        # Special case for unit testing against local mock server
+        hit = re.match(
+            r'^gs://!unittest!'
+            r'([^/:]+)'  # Hostname
+            r':([0-9]+)'  # Port
+            r'/([^/]+)'  # Bucketname
+            r'(?:/(.*))?$',  # Prefix
+            options.storage_url,
+        )
+        if hit:
+            self.hostname = hit.group(1)
+            self.port = int(hit.group(2))
+            self.bucket_name = hit.group(3)
+            self.prefix = hit.group(4) or ''
+        else:
+            hit = re.match(r'^gs://([^/]+)(?:/(.*))?$', options.storage_url)
+            if not hit:
+                raise QuietError('Invalid storage URL', exitcode=2)
+
+            self.bucket_name = hit.group(1)
+            self.hostname = 'www.googleapis.com'
+            self.prefix = hit.group(2) or ''
+            self.port = 443
+
+        super().__init__(options)
+
+    async def init(self, nursery: trio.Nursery) -> None:
+        if self.login == 'adc' and not self.adc:
+            await trio.to_thread.run_sync(self._init_adc)
+        await super().init(nursery)
+
+    def _init_adc(self):
+        if g_auth is None:
+            raise QuietError('ADC authentication requires the google.auth module')
+
+        import google.auth.transport.urllib3
+        import urllib3
+
+        # Deliberately ignore proxy and SSL context when attempting
+        # to connect to Compute Engine Metadata server.
+        requester = google.auth.transport.urllib3.Request(urllib3.PoolManager())
+        try:
+            credentials, _ = g_auth.default(
+                request=requester,
+                scopes=['https://www.googleapis.com/auth/devstorage.full_control'],
+            )
+        except g_auth.exceptions.DefaultCredentialsError as exc:
+            raise QuietError('ADC found no valid credential sources: ' + str(exc))
+
+        # Store ADC data in class attribute (not instance attribute) so we can share
+        # it between all instances.
+        type(self).adc = (credentials, requester)
+
+    async def _handle_retry_exc(self, exc: Exception):
+        if await super()._handle_retry_exc(exc):
+            return True
+
+        if isinstance(exc, RequestError) and (500 <= exc.code <= 599 or exc.code == 408):
+            return True
+
+        elif isinstance(exc, AccessTokenExpired):
+            # Delete may fail if multiple threads encounter the same error
+            self.access_token.pop(self.refresh_token, None)
+            return True
+
+        # Not clear at all what is happening here, but in doubt we retry
+        elif isinstance(exc, ServerResponseError):
+            return True
+
+        if g_auth and isinstance(exc, g_auth.exceptions.TransportError):
+            return True
+
+        return False
+
+    async def _assert_empty_response(self, resp):
+        '''Assert that current response body is empty'''
+
+        buf = self.conn.read(2048)
+        if not buf:
+            return  # expected
+        raise ServerResponseError(resp, error='expected empty response')
+
+    @co_retry
+    async def delete(self, key):
+        log.debug('started with %s', key)
+        path = '/storage/v1/b/%s/o/%s' % (
+            urllib.parse.quote(self.bucket_name, safe=''),
+            urllib.parse.quote(self.prefix + key, safe=''),
+        )
+        try:
+            resp = await self._do_request('DELETE', path)
+            self._assert_empty_response(resp)
+        except RequestError as exc:
+            exc = _map_request_error(exc, key)
+            if isinstance(exc, NoSuchObject):
+                pass
+            elif exc:
+                raise exc
+            else:
+                raise
+
+    async def list(self, prefix=''):
+        prefix = self.prefix + prefix
+        strip = len(self.prefix)
+        page_token = None
+        while True:
+            (els, page_token) = await self._list_page(prefix, page_token)
+            for el in els:
+                yield el[strip:]
+            if page_token is None:
+                break
+
+    @co_retry
+    async def _list_page(self, prefix, page_token=None, batch_size=1000):
+        # Limit maximum number of results since we read everything
+        # into memory (because Python JSON doesn't have a streaming API)
+        query_string = {'prefix': prefix, 'maxResults': str(batch_size)}
+        if page_token:
+            query_string['pageToken'] = page_token
+
+        path = '/storage/v1/b/%s/o' % (urllib.parse.quote(self.bucket_name, safe=''),)
+
+        try:
+            resp = await self._do_request('GET', path, query_string=query_string)
+        except RequestError as exc:
+            exc = _map_request_error(exc, None)
+            if exc:
+                raise exc
+            raise
+        json_resp = _parse_json_response(resp, await self._conn.co_readall())
+        page_token = json_resp.get('nextPageToken', None)
+
+        if 'items' not in json_resp:
+            assert page_token is None
+            return ((), None)
+
+        return ([x['name'] for x in json_resp['items']], page_token)
+
+    async def lookup(self, key):
+        log.debug('started with %s', key)
+        return _unwrap_user_meta(await self._get_gs_meta(key))
+
+    @co_retry
+    async def _get_gs_meta(self, key):
+        path = '/storage/v1/b/%s/o/%s' % (
+            urllib.parse.quote(self.bucket_name, safe=''),
+            urllib.parse.quote(self.prefix + key, safe=''),
+        )
+        try:
+            resp = await self._do_request('GET', path)
+        except RequestError as exc:
+            exc = _map_request_error(exc, key)
+            if exc:
+                raise exc
+            raise
+        return _parse_json_response(resp, await self._conn.co_readall())
+
+    async def get_size(self, key):
+        json_resp = await self._get_gs_meta(key)
+        return json_resp['size']
+
+    async def readinto_fh(self, key: str, fh: BinaryIO):
+        '''Transfer data stored under *key* into *fh*, return metadata.
+
+        The data will be inserted at the current offset. If a temporary error (as defined by
+        `is_temp_failure`) occurs, the operation is retried.
+        '''
+
+        return await self._readinto_fh(key, fh, fh.tell())
+
+    @co_retry
+    async def _readinto_fh(self, key: str, fh: BinaryIO, off: int):
+        gs_meta = await self._get_gs_meta(key)
+        metadata = _unwrap_user_meta(gs_meta)
+
+        path = '/storage/v1/b/%s/o/%s' % (
+            urllib.parse.quote(self.bucket_name, safe=''),
+            urllib.parse.quote(self.prefix + key, safe=''),
+        )
+        try:
+            await self._do_request('GET', path, query_string={'alt': 'media'})
+        except RequestError as exc:
+            exc = _map_request_error(exc, key)
+            if exc:
+                raise exc
+            raise
+
+        await co_copyfh(self._conn, fh)
+
+        return metadata
+
+    async def write_fh(
+        self,
+        key: str,
+        fh: BinaryIO,
+        metadata: Optional[Dict[str, Any]] = None,
+        len_: Optional[int] = None,
+    ):
+        '''Upload *len_* bytes from *fh* under *key*.
+
+        The data will be read at the current offset. If *len_* is None, reads until the
+        end of the file.
+
+        If a temporary error (as defined by `is_temp_failure`) occurs, the operation is
+        retried. Returns the size of the resulting storage object.
+        '''
+
+        off = fh.tell()
+        if len_ is None:
+            fh.seek(0, os.SEEK_END)
+            len_ = fh.tell()
+        return await self._write_fh(key, fh, off, len_, metadata or {})
+
+    @co_retry
+    async def _write_fh(
+        self, key: str, fh: BinaryIO, off: int, len_: int, metadata: Dict[str, Any]
+    ):
+        (headers, body_prefix, body_suffix) = self._get_write_headers(key, metadata)
+        body_size = len(body_prefix) + len(body_suffix) + len_
+
+        path = '/upload/storage/v1/b/%s/o' % (urllib.parse.quote(self.bucket_name, safe=''),)
+        query_string = {'uploadType': 'multipart'}
+        try:
+            resp = await self._do_request(
+                'POST',
+                path,
+                query_string=query_string,
+                headers=headers,
+                body=BodyFollowing(body_size),
+            )
+        except RequestError as exc:
+            exc = _map_request_error(exc, key)
+            if exc:
+                raise exc
+            raise
+
+        assert resp.status == 100
+        fh.seek(off)
+
+        try:
+            await self._conn.co_write(body_prefix)
+            # TODO: Explicitly pass off in here and use pread(), otherwise we can't
+            # upload multiple parts of the same fh concurrently.
+            await co_copyfh(fh, self._conn, len_)
+            await self._conn.co_write(body_suffix)
+        except ConnectionClosed:
+            # Server closed connection while we were writing body data -
+            # but we may still be able to read an error response
+            try:
+                resp = await self._conn.co_read_response()
+            except ConnectionClosed:  # No server response available
+                pass
+            else:
+                log.warning(
+                    'Server broke connection during upload, signaled %d %s',
+                    resp.status,
+                    resp.reason,
+                )
+            # Re-raise first ConnectionClosed exception
+            raise
+
+        resp = await self._conn.co_read_response()
+        # If we're really unlucky, then the token has expired while we were uploading data.
+        if resp.status == 401:
+            await self._conn.discard()
+            raise AccessTokenExpired()
+        elif resp.status != 200:
+            exc = _parse_error_response(resp, await self._conn.co_readall())
+            exc = _map_request_error(exc, key)
+            if exc:
+                raise exc
+            raise
+        _parse_json_response(resp, await self._conn.co_readall())
+
+        return body_size
+
+    def _get_write_headers(self, key: str, metadata: Dict[str, Any]):
+        metadata = json.dumps(
+            {
+                'metadata': _wrap_user_meta(metadata),
+                'name': self.prefix + key,
+            }
+        )
+
+        # Google Storage uses Content-Length to read the object data, so we
+        # don't have to worry about the boundary occurring in the object data.
+        boundary = 'foo_bar_baz'
+        headers = CaseInsensitiveDict()
+        headers['Content-Type'] = 'multipart/related; boundary=%s' % boundary
+
+        body_prefix = '\n'.join(
+            (
+                '--' + boundary,
+                'Content-Type: application/json; charset=UTF-8',
+                '',
+                metadata,
+                '--' + boundary,
+                'Content-Type: application/octet-stream',
+                '',
+                '',
+            )
+        ).encode()
+        body_suffix = ('\n--%s--\n' % boundary).encode()
+
+        return (headers, body_prefix, body_suffix)
+
+    async def close(self):
+        log.debug('closing')
+        await super().close()
+        self._conn.disconnect()
+
+    def __str__(self):
+        return '<gs.Backend, name=%s, prefix=%s>' % (self.bucket_name, self.prefix)
+
+    # This method uses a different HTTP connection than its callers, but shares
+    # the same retry logic. It is therefore possible that errors with this
+    # connection cause the other connection to be reset - but this should not
+    # be a problem, because there can't be a pending request if we don't have
+    # a valid access token.
+    async def _get_access_token(self):
+        log.info('Requesting new access token')
+
+        if self.adc:
+            try:
+                await trio.to_thread.run_sync(self.adc[0].refresh, self.adc[1])
+            except g_auth.exceptions.RefreshError as exc:
+                raise AuthenticationError('Failed to refresh credentials: ' + str(exc))
+            self.access_token[self.refresh_token] = self.adc[0].token
+            return
+
+        headers = CaseInsensitiveDict()
+        headers['Content-Type'] = 'application/x-www-form-urlencoded; charset=utf-8'
+
+        body = urllib.parse.urlencode(
+            {
+                'client_id': OAUTH_CLIENT_ID,
+                'client_secret': OAUTH_CLIENT_SECRET,
+                'refresh_token': self.refresh_token,
+                'grant_type': 'refresh_token',
+            }
+        )
+
+        conn = HTTPConnection(
+            'accounts.google.com', 443, proxy=self.proxy, ssl_context=self.ssl_context
+        )
+        try:
+            await conn.co_send_request(
+                'POST', '/o/oauth2/token', headers=headers, body=body.encode('utf-8')
+            )
+            resp = await conn.co_read_response()
+            json_resp = _parse_json_response(resp, await conn.co_readall())
+
+            if resp.status > 299 or resp.status < 200:
+                assert 'error' in json_resp
+            if 'error' in json_resp:
+                raise AuthenticationError(json_resp['error'])
+            else:
+                self.access_token[self.refresh_token] = json_resp['access_token']
+        finally:
+            conn.disconnect()
+
+    async def _do_request(self, method, path, query_string=None, headers=None, body=None):
+        '''Send request, read and return response object'''
+
+        log.debug('started with %s %s, qs=%s', method, path, query_string)
+
+        if headers is None:
+            headers = CaseInsensitiveDict()
+
+        expect100 = isinstance(body, BodyFollowing)
+        headers['host'] = self.hostname
+        if query_string:
+            s = urllib.parse.urlencode(query_string, doseq=True)
+            path += '?%s' % s
+
+        token = self.access_token.get(self.refresh_token, None)
+        if token is None:
+            # Lock to prevent multiple threads from refreshing the token simultaneously.
+            async with self._refresh_lock:
+                # Don't refresh if another thread has already done so while we waited for the lock.
+                if self.access_token.get(self.refresh_token, None) is None:
+                    await self._get_access_token()
+            token = self.access_token.get(self.refresh_token)
+
+        headers['Authorization'] = 'Bearer ' + token
+        await self._conn.co_send_request(
+            method, path, body=body, headers=headers, expect100=expect100
+        )
+        resp = await self._conn.co_read_response()
+        if (expect100 and resp.status == 100) or (not expect100 and 200 <= resp.status <= 299):
+            return resp
+        elif resp.status == 401:
+            raise AccessTokenExpired()
+        else:
+            raise _parse_error_response(resp, await self._conn.co_readall())

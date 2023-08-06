@@ -197,7 +197,6 @@ class B2Backend(AbstractBackend):
         )
 
         with HTTPConnection(authorize_host, 443, ssl_context=self.ssl_context) as connection:
-
             headers = CaseInsensitiveDict()
             headers['Authorization'] = basic_auth_string
 
@@ -469,7 +468,6 @@ class B2Backend(AbstractBackend):
 
     @retry
     def _write_fh(self, key: str, fh: BinaryIO, off: int, len_: int, metadata: Dict[str, Any]):
-
         headers = CaseInsensitiveDict(self._extra_headers)
         if metadata is None:
             metadata = dict()
@@ -536,7 +534,7 @@ class B2Backend(AbstractBackend):
 
     @retry
     def _delete_file_ids(self, file_ids, force=False, is_retry=False):
-        for (i, file_id) in enumerate(file_ids):
+        for i, file_id in enumerate(file_ids):
             try:
                 self._delete_file_id(file_id['fileName'], file_id['fileId'], force or is_retry)
             except:
@@ -774,7 +772,7 @@ class B2Backend(AbstractBackend):
         meta = literal_eval('{ %s }' % buffer)
 
         # Decode bytes values
-        for (k, v) in meta.items():
+        for k, v in meta.items():
             if not isinstance(v, bytes):
                 continue
             try:

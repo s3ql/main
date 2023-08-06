@@ -257,7 +257,6 @@ class Backend(AbstractBackend):
 
     @retry
     def _list_page(self, prefix, page_token=None, batch_size=1000):
-
         # We can get at most 1000 keys at a time, so there's no need
         # to bother with streaming.
         query_string = {'prefix': prefix, 'max-keys': str(batch_size)}
@@ -395,7 +394,6 @@ class Backend(AbstractBackend):
 
     @retry
     def _write_fh(self, key: str, fh: BinaryIO, off: int, len_: int, metadata: Dict[str, Any]):
-
         headers = CaseInsensitiveDict()
         headers.update(self._extra_put_headers)
         self._add_meta_headers(headers, metadata)
@@ -420,7 +418,6 @@ class Backend(AbstractBackend):
 
     # NOTE: ! This function is also used by the swift backend. !
     def _add_meta_headers(self, headers, metadata, chunksize=255):
-
         hdr_count = 0
         length = 0
         for key in metadata.keys():
@@ -782,7 +779,7 @@ class Backend(AbstractBackend):
         meta = literal_eval('{ %s }' % buf)
 
         # Decode bytes values
-        for (k, v) in meta.items():
+        for k, v in meta.items():
             if not isinstance(v, bytes):
                 continue
             try:

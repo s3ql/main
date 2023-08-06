@@ -76,7 +76,7 @@ def check_test_output(capfd, item):
         false_pos = item.checklogs_fp
     except AttributeError:
         false_pos = ()
-    for (pattern, flags, count) in false_pos:
+    for pattern, flags, count in false_pos:
         cp = re.compile(pattern, flags)
         (stdout, cnt) = cp.subn('', stdout, count=count)
         if count == 0 or count - cnt > 0:

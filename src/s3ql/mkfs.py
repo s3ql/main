@@ -35,7 +35,6 @@ log = logging.getLogger(__name__)
 
 
 def parse_args(args):
-
     parser = ArgumentParser(description="Initializes an S3QL file system")
 
     parser.add_cachedir()
@@ -135,7 +134,6 @@ def init_tables(conn):
 
 
 def main(args=None):
-
     if args is None:
         args = sys.argv[1:]
 

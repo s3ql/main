@@ -115,7 +115,6 @@ def parse_args(args):
 
 
 def main(args=None):
-
     if args is None:
         args = sys.argv[1:]
 
@@ -198,7 +197,6 @@ def upgrade_to_state(backup_list):
 
 
 def process_backups(backup_list, state, cycles):
-
     # New backups
     new_backups = backup_list - set(state)
     for x in sorted(new_backups):
@@ -226,7 +224,6 @@ def process_backups(backup_list, state, cycles):
     keep = set()
     missing = defaultdict(list)
     for step in range(max(cycles)):
-
         log.debug('Considering situation after %d more backups', step)
         for x in simstate:
             simstate[x] += 1
@@ -236,12 +233,12 @@ def process_backups(backup_list, state, cycles):
         if step != 0:
             simstate[step] = 0
 
-        for (min_, max_) in ranges:
+        for min_, max_ in ranges:
             log.debug('Looking for backup for age range %d to %d', min_, max_)
 
             # Look in simstate
             found = False
-            for (backup, age) in simstate.items():
+            for backup, age in simstate.items():
                 if min_ <= age < max_:
                     found = True
                     break
@@ -252,7 +249,7 @@ def process_backups(backup_list, state, cycles):
                 continue
 
             # Look in state
-            for (backup, age) in state.items():
+            for backup, age in state.items():
                 age += step
                 if min_ <= age < max_:
                     log.info(

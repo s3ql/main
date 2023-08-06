@@ -61,7 +61,7 @@ def iter_imports(path):
 def yield_modules(path):
     '''Yield all Python modules underneath *path*'''
 
-    for (dpath, dnames, fnames) in os.walk(path):
+    for dpath, dnames, fnames in os.walk(path):
         module = tuple(dpath.split('/')[1:])
         for fname in fnames:
             if not fname.endswith('.py'):
@@ -80,24 +80,20 @@ def check_imports():
 
     # Memorize where objects are defined
     definitions = dict()
-    for (fpath, modname) in yield_modules('src'):
+    for fpath, modname in yield_modules('src'):
         definitions[modname] = get_definitions(fpath)
 
     # Special case, we always want to import these indirectly
-    definitions[
-        's3ql',
-    ].add('ROOT_INODE')
+    definitions['s3ql',].add('ROOT_INODE')
 
     # False positives
-    definitions[
-        's3ql',
-    ].add('sqlite3ext')
+    definitions['s3ql',].add('sqlite3ext')
 
     # Check if imports are direct
     found_problems = False
     for path in ('src', 'util', 'contrib', 'tests'):
-        for (fpath, modname) in yield_modules(path):
-            for (lvl, name) in iter_imports(fpath):
+        for fpath, modname in yield_modules(path):
+            for lvl, name in iter_imports(fpath):
                 if lvl:
                     if lvl and fpath.endswith('/__init__.py'):
                         lvl += 1

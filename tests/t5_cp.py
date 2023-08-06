@@ -46,7 +46,6 @@ class TestCp(t4_fuse.TestFuse):
         self.logfile.close()
 
     def tst_cp(self):
-
         tempdir = tempfile.mkdtemp(prefix='s3ql-cp-')
         try:
             populate_dir(tempdir)

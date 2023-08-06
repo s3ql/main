@@ -161,7 +161,7 @@ def retrieve_objects(
 
     sql = 'SELECT id, phys_size, hash, length FROM objects ORDER BY id'
     i = 0  # Make sure this is set if there are zero objects
-    for (i, (obj_id, obj_size, hash_, block_size)) in enumerate(db.query(sql)):
+    for i, (obj_id, obj_size, hash_, block_size) in enumerate(db.query(sql)):
         i += 1  # start at 1
         extra = {'rate_limit': 1, 'update_console': True, 'is_last': i == total_count}
         if full:

@@ -39,7 +39,6 @@ def parse_args(args):
 
 
 def main(args=None):
-
     if args is None:
         args = sys.argv[1:]
 

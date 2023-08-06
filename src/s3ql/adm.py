@@ -245,7 +245,7 @@ def clear(options, on_return):
         t.start()
         threads.append(t)
 
-    for (i, obj_id) in enumerate(backend.list()):
+    for i, obj_id in enumerate(backend.list()):
         log.info(
             'Deleting objects (%d so far)...', i, extra={'rate_limit': 1, 'update_console': True}
         )
@@ -405,7 +405,7 @@ def restore_metadata_cmd(backend, options):
 
     print('The following backups are available:')
     print('Idx    Seq No: Last Modified:')
-    for (i, seq_no) in enumerate(backups):
+    for i, seq_no in enumerate(backups):
         # De-serialize directly instead of using read_remote_params() to avoid exceptions on old
         # filesystem revisions.
         d = thaw_basic_mapping(backend['s3ql_params_%010x' % seq_no])

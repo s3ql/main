@@ -204,7 +204,7 @@ class InodeCache:
         attrs = self.db.get_row("SELECT %s FROM inodes WHERE id=? " % ATTRIBUTE_STR, (id_,))
         inode = _Inode(self.generation)
 
-        for (i, id_) in enumerate(ATTRIBUTES):
+        for i, id_ in enumerate(ATTRIBUTES):
             setattr(inode, id_, attrs[i])
 
         inode.dirty = False
@@ -212,7 +212,6 @@ class InodeCache:
         return inode
 
     def create_inode(self, **kw):
-
         bindings = tuple(kw[x] for x in ATTRIBUTES if x in kw)
         columns = ', '.join(x for x in ATTRIBUTES if x in kw)
         values = ', '.join('?' * len(kw))

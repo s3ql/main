@@ -212,7 +212,7 @@ class Operations(pyfuse3.Operations):
             'WHERE parent_inode=? AND name_id > ? ORDER BY name_id',
             (id_, off - 3),
         ) as res:
-            for (next_, name, cid_) in res:
+            for next_, name, cid_ in res:
                 if not pyfuse3.readdir_reply(
                     token, name, self.inodes[cid_].entry_attributes(), next_ + 3
                 ):
@@ -373,7 +373,7 @@ class Operations(pyfuse3.Operations):
                     'AND name_id > ? ORDER BY name_id',
                     (id_p, off),
                 ) as res:
-                    for (name_id, id_) in res:
+                    for name_id, id_ in res:
                         self.inodes[id_].locked = True
 
                         if conn.has_val('SELECT 1 FROM contents WHERE parent_inode=?', (id_,)):
@@ -428,7 +428,7 @@ class Operations(pyfuse3.Operations):
                 )
                 reinserted = False
 
-                for (name, _, id_) in query_chunk:
+                for name, _, id_ in query_chunk:
                     if conn.has_val('SELECT 1 FROM contents WHERE parent_inode=?', (id_,)):
                         # First delete subdirectories
                         if not reinserted:
@@ -517,8 +517,7 @@ class Operations(pyfuse3.Operations):
                     'AND name_id > ? ORDER BY name_id',
                     (src_id, off),
                 ) as res:
-                    for (name_id, id_) in res:
-
+                    for name_id, id_ in res:
                         # Make sure that all blocks are in the database
                         if id_ in self.open_inodes:
                             await self.cache.start_flush(id_)
@@ -806,7 +805,6 @@ class Operations(pyfuse3.Operations):
         inode_p_new.ctime_ns = now_ns
 
     def _replace(self, id_p_old, name_old, id_p_new, name_new, id_old, id_new):
-
         now_ns = time_ns()
 
         if self.db.has_val("SELECT 1 FROM contents WHERE parent_inode=?", (id_new,)):
@@ -1284,7 +1282,7 @@ class Operations(pyfuse3.Operations):
     async def forget(self, forget_list):
         log.debug('started with %s', forget_list)
 
-        for (id_, nlookup) in forget_list:
+        for id_, nlookup in forget_list:
             self.open_inodes[id_] -= nlookup
 
             if self.open_inodes[id_] == 0:

@@ -91,7 +91,7 @@ class cache_tests(unittest.TestCase):
         }
 
         inode = self.cache.create_inode(**attrs)
-        for (key, val) in attrs.items():
+        for key, val in attrs.items():
             self.assertEqual(getattr(inode, key), val)
 
         # Create another inode
