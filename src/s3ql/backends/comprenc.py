@@ -15,6 +15,7 @@ import lzma
 import struct
 import time
 import zlib
+import zstandard
 from typing import Any, BinaryIO, Dict, Optional
 
 import cryptography.hazmat.backends as crypto_backends
@@ -72,7 +73,9 @@ class ComprencBackend(AbstractBackend):
         self.compression = compression
         self.backend = backend
 
-        if compression[0] not in ('bzip2', 'lzma', 'zlib', None) or compression[1] not in range(10):
+        if (compression[0] not in ('bzip2', 'lzma', 'zlib', 'zstd', None) 
+           or (compression[0]!='zstd' and compression[1] not in range(10))
+           or (compression[0]=='zstd' and compression[1] not in range(23))):
             raise ValueError('Unsupported compression: %s' % compression)
 
     @property
@@ -208,6 +211,8 @@ class ComprencBackend(AbstractBackend):
             decompressor = lzma.LZMADecompressor()
         elif compr_alg == 'ZLIB':
             decompressor = zlib.decompressobj()
+        elif compr_alg == 'ZSTD':
+            decompressor = zstandard.ZstdDecompressor().decompressobj()
         else:
             raise RuntimeError('Unsupported compression: %s' % compr_alg)
         assert buf2 is not fh
@@ -251,6 +256,9 @@ class ComprencBackend(AbstractBackend):
             elif self.compression[0] == 'lzma':
                 compr = lzma.LZMACompressor(preset=self.compression[1])
                 meta_raw['compression'] = 'LZMA'
+            elif self.compression[0] == 'zstd':
+                compr = zstandard.ZstdCompressor(level=self.compression[1], write_checksum=True).compressobj()
+                meta_raw['compression'] = 'ZSTD'
             buf = io.BytesIO()
             compress_fh(fh, buf, compr, len_=len_)
             buf.seek(0)
@@ -415,6 +423,11 @@ def decompress_buf(decomp, buf):
     except zlib.error as exc:
         if exc.args[0].lower().startswith('error -3 while decompressing'):
             raise CorruptedObjectError('Invalid compressed stream')
+        raise
+    except zstandard.ZstdError as exc:
+        if (exc.args[0].lower().startswith('zstd decompressor error')
+            or exc.args[0].lower().startswith('zstd decompress error')):
+                raise CorruptedObjectError('Invalid compressed stream')
         raise
 
 

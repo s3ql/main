@@ -41,7 +41,7 @@ from s3ql.common import get_backend
 from s3ql.logging import QuietError, setup_logging, setup_warnings
 from s3ql.parse_args import ArgumentParser
 
-ALGS = ('lzma', 'bzip2', 'zlib')
+ALGS = ('lzma', 'bzip2', 'zlib', 'zstd')
 
 log = logging.getLogger(__name__)
 

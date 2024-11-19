@@ -212,12 +212,12 @@ class ArgumentParser(argparse.ArgumentParser):
 
     def add_compress(self):
         def compression_type(s):
-            hit = re.match(r'^([a-z0-9]+)(?:-([0-9]))?$', s)
+            hit = re.match(r'^([a-z0-9]+)(?:-([0-9]+))?$', s)
             if not hit:
                 raise argparse.ArgumentTypeError('%s is not a valid --compress value' % s)
             alg = hit.group(1)
             lvl = hit.group(2)
-            if alg not in ('none', 'zlib', 'bzip2', 'lzma'):
+            if alg not in ('none', 'zlib', 'bzip2', 'lzma', 'zstd'):
                 raise argparse.ArgumentTypeError('Invalid compression algorithm: %s' % alg)
             if lvl is None:
                 lvl = 6
@@ -235,8 +235,9 @@ class ArgumentParser(argparse.ArgumentParser):
             type=compression_type,
             help="Compression algorithm and compression level to use when "
             "storing new data. *algorithm* may be any of `lzma`, `bzip2`, "
-            "`zlib`, or none. *lvl* may be any integer from 0 (fastest) "
-            "to 9 (slowest). Default: `%(default)s`",
+            "`zlib`, 'zstd', or none. *lvl* may be any integer from 0 (fastest) "
+            "to 9 (slowest) for lzma, bzip2, zlib; and 0 (fastest) to 22(slowest) "
+            "for zstd. Default: `%(default)s`",
         )
 
     def add_subparsers(self, **kw):
